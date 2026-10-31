@@ -87,5 +87,5 @@ def run(report_path=None,screenshot=None):
     if report_path:
         report_path=Path(report_path);report_path.parent.mkdir(parents=True,exist_ok=True);report_path.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8')
     if sys.stdout:
-        print(json.dumps(report,ensure_ascii=False))
+        print(json.dumps(report,ensure_ascii=True))
     return 0 if report['ok'] else 1

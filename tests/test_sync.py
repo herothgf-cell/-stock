@@ -1,5 +1,6 @@
 import base64
 import copy
+import hashlib
 import importlib
 import io
 import json
@@ -219,6 +220,107 @@ class SyncTests(unittest.TestCase):
         ])
         with self.assertRaises(self.m.SyncError):
             client.synchronize(self.base, None)
+        self.assertEqual(len(transport.requests), 2)
+
+    def catalog(self):
+        state = copy.deepcopy(self.base)
+        for index in range(4309):
+            code = f"{index:06d}"
+            state["instruments"]["KR:" + code] = {
+                "id": "KR:" + code, "updated_at": STAMP, "deleted": False,
+                "market": "KR", "code": code, "name": "국내 상장 해외지수 장기투자 ETF " + code,
+                "currency": "KRW", "asset_type": "ETF", "sector": "분산형", "source": "NH 공식 종목 목록",
+            }
+        raw = json.dumps(state, ensure_ascii=False, separators=(",", ":")).encode()
+        self.assertGreater(len(raw), 1_000_000)
+        sha = hashlib.sha1(f"blob {len(raw)}\0".encode() + raw).hexdigest()
+        metadata = {"type": "file", "encoding": "none", "content": "", "size": len(raw), "sha": sha,
+                    "git_url": "https://evil.invalid/do-not-use", "download_url": "https://evil.invalid/do-not-use"}
+        blob = {"sha": sha, "encoding": "base64", "size": len(raw), "content": base64.b64encode(raw).decode()}
+        return state, raw, metadata, blob
+
+    def test_catalog_sized_inline_snapshot_over_one_mb_is_supported(self):
+        remote, raw, metadata, blob = self.catalog()
+        client, transport = self.client([
+            ("GET", "/repos/owner/journal", {"private": True, "default_branch": "main"}),
+            ("GET", "/contents/journal.json?ref=main", {**blob, "type": "file"}),
+        ])
+        result = client.synchronize(self.base, self.base)
+        self.assertEqual(result["state"], remote)
+        self.assertEqual(len(transport.requests), 2)
+
+    def test_catalog_sized_blob_download_merges_and_uploads_with_same_sha(self):
+        remote, raw, metadata, blob = self.catalog()
+        local = copy.deepcopy(self.base)
+        local["accounts"]["a"]["name"] = "Local account edit"
+        client, transport = self.client([
+            ("GET", "/repos/owner/journal", {"private": True, "default_branch": "main"}),
+            ("GET", "/contents/journal.json?ref=main", metadata),
+            ("GET", "/git/blobs/" + metadata["sha"], blob),
+            ("GET", "/repos/owner/journal", {"private": True, "default_branch": "main"}),
+            ("PUT", "/contents/journal.json", {"content": {"sha": "new-catalog-sha"}}),
+        ])
+        result = client.synchronize(local, self.base)
+        self.assertEqual(len(result["state"]["instruments"]), 4309)
+        self.assertEqual(result["state"]["accounts"]["a"]["name"], "Local account edit")
+        self.assertEqual(result["sha"], "new-catalog-sha")
+        self.assertEqual(transport.requests[1].get_header("Accept"), "application/vnd.github.object+json")
+        uploaded = json.loads(transport.requests[-1].data)
+        self.assertEqual(uploaded["sha"], metadata["sha"])
+        self.assertEqual(json.loads(base64.b64decode(uploaded["content"])), result["state"])
+
+    def test_large_blob_sha_encoding_and_content_are_verified(self):
+        raw = json.dumps(self.base).encode()
+        sha = hashlib.sha1(f"blob {len(raw)}\0".encode() + raw).hexdigest()
+        metadata = {"type": "file", "encoding": "none", "content": "", "size": len(raw), "sha": sha}
+        blob = {"sha": sha, "encoding": "base64", "size": len(raw), "content": base64.b64encode(raw).decode()}
+        for changes in ({"sha": "f" * 40}, {"encoding": "utf-8"}, {"content": "%%%"}, {"size": len(raw) + 1},
+                        {"content": base64.b64encode(raw.replace(b"Base", b"Fake")).decode()}):
+            with self.subTest(changes=changes):
+                client, transport = self.client([
+                    ("GET", "/repos/owner/journal", {"private": True, "default_branch": "main"}),
+                    ("GET", "/contents/journal.json?ref=main", metadata),
+                    ("GET", "/git/blobs/" + sha, {**blob, **changes}),
+                ])
+                with self.assertRaises(self.m.SyncError):
+                    client.synchronize(self.base, self.base)
+                self.assertEqual(len(transport.requests), 3)
+
+    def test_invalid_large_blob_sha_and_oversize_metadata_stop_before_blob_fetch(self):
+        for changes in ({"sha": "../../other"}, {"size": 20_000_001}):
+            metadata = {"type": "file", "encoding": "none", "content": "", "size": 1000, "sha": "a" * 40, **changes}
+            with self.subTest(changes=changes):
+                client, transport = self.client([
+                    ("GET", "/repos/owner/journal", {"private": True, "default_branch": "main"}),
+                    ("GET", "/contents/journal.json?ref=main", metadata),
+                ])
+                with self.assertRaises(self.m.SyncError):
+                    client.synchronize(self.base, self.base)
+                self.assertEqual(len(transport.requests), 2)
+
+    def test_decoded_blob_limit_is_enforced_when_metadata_understates_size(self):
+        metadata = {"type": "file", "encoding": "none", "content": "", "size": 1, "sha": "a" * 40}
+        blob = {"sha": "a" * 40, "encoding": "base64", "size": 1, "content": base64.b64encode(b" " * 1001).decode()}
+        client, transport = self.client([
+            ("GET", "/repos/owner/journal", {"private": True, "default_branch": "main"}),
+            ("GET", "/contents/journal.json?ref=main", metadata),
+            ("GET", "/git/blobs/" + metadata["sha"], blob),
+        ])
+        with patch.object(client, "MAX_BYTES", 1000), self.assertRaisesRegex(self.m.SyncError, "size"):
+            client.synchronize(self.base, self.base)
+        self.assertEqual(len(transport.requests), 3)
+
+    def test_upload_over_twenty_mb_is_rejected_before_put(self):
+        local = copy.deepcopy(self.base)
+        for index in range(201):
+            uid = f"large-{index}"
+            local["accounts"][uid] = {**account("x" * 100_000), "id": uid}
+        client, transport = self.client([
+            ("GET", "/repos/owner/journal", {"private": True, "default_branch": "main"}),
+            ("GET", "/contents/journal.json?ref=main", self.payload(self.base)),
+        ])
+        with self.assertRaisesRegex(self.m.SyncError, "size"):
+            client.synchronize(local, self.base)
         self.assertEqual(len(transport.requests), 2)
 
 

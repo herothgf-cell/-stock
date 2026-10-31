@@ -96,7 +96,7 @@ class _HTTPFailure(SyncError):
 
 
 class GitHubSync:
-    MAX_BYTES = 1_000_000
+    MAX_BYTES = 20_000_000
 
     def __init__(self, repo, token, branch="main"):
         if not isinstance(repo, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", repo):
@@ -109,14 +109,14 @@ class GitHubSync:
         self._opener = urllib.request.build_opener(_NoRedirect())
         self._root = f"https://api.github.com/repos/{repo}"
 
-    def _request(self, method, path="", payload=None):
+    def _request(self, method, path="", payload=None, *, accept="application/vnd.github+json"):
         url = self._root + path
         parsed = urllib.parse.urlsplit(url)
         if parsed.scheme != "https" or parsed.netloc != "api.github.com":
             raise SyncError("Only the HTTPS GitHub API is permitted")
         data = None if payload is None else _canonical(payload).encode("utf-8")
         request = urllib.request.Request(url, data=data, method=method, headers={
-            "Authorization": f"Bearer {self._token}", "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {self._token}", "Accept": accept,
             "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json", "User-Agent": "PersonalStockJournal/1",
         })
         try:
@@ -148,7 +148,8 @@ class GitHubSync:
 
     def _read_remote(self, base, info):
         try:
-            content = self._request("GET", "/contents/journal.json?ref=" + urllib.parse.quote(self.branch, safe=""))
+            content = self._request("GET", "/contents/journal.json?ref=" + urllib.parse.quote(self.branch, safe=""),
+                                    accept="application/vnd.github.object+json")
         except _HTTPFailure as exc:
             if exc.code != 404:
                 raise
@@ -174,17 +175,43 @@ class GitHubSync:
                 else:
                     raise SyncError("The selected branch is unavailable")
             return empty_state(), None
-        if content.get("type") != "file" or content.get("encoding") != "base64" or not isinstance(content.get("sha"), str) or not content["sha"]:
-            raise SyncError("Remote journal must be a regular base64-encoded JSON file")
+        sha = content.get("sha")
+        if content.get("type") != "file" or not isinstance(sha, str) or not sha:
+            raise SyncError("Remote journal must be a regular JSON file with a content SHA")
+        size = content.get("size")
+        if size is not None and (type(size) is not int or not 0 <= size <= self.MAX_BYTES):
+            raise SyncError("Remote journal has an invalid or unsupported size")
+        from_blob = content.get("encoding") == "none"
+        if from_blob:
+            if not re.fullmatch(r"[0-9a-fA-F]{40}", sha) or type(size) is not int:
+                raise SyncError("Remote journal has invalid Git blob metadata")
+            # Contents omits the body above 1 MB. Fetch that exact immutable
+            # blob; never use remote-provided download_url or git_url values.
+            content = self._request("GET", "/git/blobs/" + sha.lower())
+            blob_sha = content.get("sha")
+            if not isinstance(blob_sha, str) or blob_sha.lower() != sha.lower():
+                raise SyncError("GitHub returned a different journal blob SHA")
+            if type(content.get("size")) is not int or content["size"] != size:
+                raise SyncError("GitHub returned inconsistent journal blob size metadata")
+        if content.get("encoding") != "base64":
+            raise SyncError("Remote journal content must use base64 encoding")
         try:
             raw = base64.b64decode("".join(content["content"].split()), validate=True)
             if len(raw) > self.MAX_BYTES:
                 raise SyncError("Remote journal exceeds the supported size")
+            if from_blob:
+                if len(raw) != size:
+                    raise SyncError("Decoded journal blob size differs from its metadata")
+                digest = hashlib.sha1()
+                digest.update(f"blob {len(raw)}\0".encode("ascii"))
+                digest.update(raw)
+                if digest.hexdigest() != sha.lower():
+                    raise SyncError("Decoded journal content does not match its Git blob SHA")
             state = json.loads(raw.decode("utf-8"))
             validate_state(state)
         except (KeyError, TypeError, AttributeError, binascii.Error, UnicodeError, json.JSONDecodeError, ValidationError):
             raise SyncError("Remote journal is malformed or failed financial validation") from None
-        return state, content["sha"]
+        return state, sha
 
     def synchronize(self, local, base, resolutions=None):
         validate_state(local)
