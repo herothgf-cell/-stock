@@ -189,7 +189,8 @@ class NHProviderTests(unittest.TestCase):
             "Output_0": [{"acct_no": "12345678901", "acct_type": "01"},
                          {"acct_no": "12345678902", "acct_type": "03"},
                          {"acct_no": "12345678903", "acct_type": "99"}]}))
-        actual = self.provider(http).discover_accounts()
+        provider = self.provider(http)
+        actual = provider.discover_accounts()
         self.assertEqual([(a["account_type"], a["environment"], a["usable"]) for a in actual],
                          [("01", "live", True), ("03", "mock", False), ("99", "unknown", False)])
         self.assertEqual(actual[0]["account_number"], "12345678901")
@@ -197,7 +198,16 @@ class NHProviderTests(unittest.TestCase):
         self.assertNotIn("private-customer", json.dumps(actual))
         self.assertEqual(http.requests[1].full_url, "https://api.nhplug.com:8443/n2/acctinfo")
         self.assertEqual(json.loads(http.requests[1].data), {"Input_0": {}})
-        self.assertEqual(list(Path(self.directory.name).rglob("*.bin")), [])
+        cache_files = list(Path(self.directory.name).rglob("*.bin"))
+        self.assertEqual(cache_files, [provider._secrets.path] if provider._secrets.supported else [])
+        self.assertEqual(set(provider._secrets._values), {"token"})
+        cache_contents = json.dumps(provider._secrets._values)
+        for sensitive in ("12345678901", "12345678902", "12345678903", "private-customer"):
+            self.assertNotIn(sensitive, cache_contents)
+        for path in cache_files:
+            protected = path.read_bytes()
+            for sensitive in (b"test-token", b"fixture-secret", b"12345678901", b"private-customer"):
+                self.assertNotIn(sensitive, protected)
 
     def test_account_discovery_does_not_hide_malformed_or_ambiguous_rows(self):
         for rows in ([{"acct_no": "bad", "acct_type": "01"}],

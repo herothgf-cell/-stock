@@ -6,6 +6,7 @@ import unittest
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 from urllib.error import URLError
 
@@ -43,6 +44,7 @@ class NHExecutionTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
+        self.case_counter = 0
         try:
             self.nh = importlib.import_module("stockjournal.nh_execution")
             self.auto = importlib.import_module("stockjournal.automation")
@@ -55,9 +57,11 @@ class NHExecutionTests(unittest.TestCase):
         sleeping.start()
         self.addCleanup(sleeping.stop)
 
-    def adapter(self, http, **options):
+    def adapter(self, http, *, cache_name=None, **options):
+        self.case_counter += 1
+        cache_dir = Path(self.directory.name) / (cache_name or f"case-{self.case_counter}")
         with patch("stockjournal.providers.build_opener", return_value=http):
-            provider = NHProvider("fixture-key", "fixture-secret", Path(self.directory.name))
+            provider = NHProvider("fixture-key", "fixture-secret", cache_dir)
         settings = dict(environment="live", session="afterhours", enabled=True,
                         session_verified=True, cash_account_verified=True)
         settings.update(options)
@@ -73,6 +77,38 @@ class NHExecutionTests(unittest.TestCase):
         http = FixtureHTTP(token(), current(), availability(), Response({"Output_0": {"orr_no": 123}}), *later)
         adapter = self.adapter(http)
         return http, adapter, adapter.submit_limit(self.request(adapter))
+
+    def test_independent_adapter_fixtures_stay_isolated_with_protected_cache(self):
+        transform = lambda raw: bytes(value ^ 0xA5 for value in raw)
+        with patch("stockjournal.secrets.sys", SimpleNamespace(platform="win32")), \
+             patch("stockjournal.secrets._dpapi_encrypt", side_effect=transform), \
+             patch("stockjournal.secrets._dpapi_decrypt", side_effect=transform):
+            for token_value in ("first-fixture-token", "second-fixture-token"):
+                http = FixtureHTTP(token(token_value), current())
+                adapter = self.adapter(http)
+                self.assertEqual(adapter.quote(adapter.account_id, "TQQQ").price, Decimal("49.12"))
+                self.assertEqual(len(http.requests), 2)
+                self.assertEqual(http.requests[-1].get_header("Authorization"), "Bearer " + token_value)
+            self.assertEqual(len(list(Path(self.directory.name).rglob("*.bin"))), 2)
+
+    def test_restart_with_deliberately_shared_protected_cache_skips_token_request(self):
+        transform = lambda raw: bytes(value ^ 0xA5 for value in raw)
+        with patch("stockjournal.secrets.sys", SimpleNamespace(platform="win32")), \
+             patch("stockjournal.secrets._dpapi_encrypt", side_effect=transform), \
+             patch("stockjournal.secrets._dpapi_decrypt", side_effect=transform):
+            initial_http = FixtureHTTP(token("shared-restart-token"), current(), availability(),
+                                       Response({"Output_0": {"orr_no": 123}}))
+            initial = self.adapter(initial_http, cache_name="shared-restart")
+            submitted = initial.submit_limit(self.request(initial))
+            restarted_http = FixtureHTTP(orders(order_row(cns_qty=5, cns_pr="49.10", ny_cns_orr_qty=0,
+                                                         oss_ato_orr_sts_cd="3")), orders())
+            restarted = self.adapter(restarted_http, cache_name="shared-restart")
+            result = restarted.order_status(restarted.account_id, submitted.broker_order_id)
+            self.assertEqual((result.status, result.filled_quantity, result.average_price),
+                             ("FILLED", Decimal(5), Decimal("49.10")))
+            self.assertEqual(len(restarted_http.requests), 2)
+            self.assertTrue(all(request.get_header("Authorization") == "Bearer shared-restart-token"
+                                for request in restarted_http.requests))
 
     def test_default_disabled_or_unverified_settings_make_no_http_request(self):
         for changes in ({"enabled": False}, {"session_verified": False}, {"cash_account_verified": False}):
