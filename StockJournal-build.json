@@ -1,16 +1,16 @@
 {
   "schema_version": 1,
-  "version": "0.2.0",
-  "source_commit": "e1c44df76af0e9fa23a7ccd582334f38bd058672",
-  "built_at_utc": "2026-10-31T14:58:45Z",
+  "version": "0.2.1",
+  "source_commit": "0c266a27035c3af1ba803cca150f1bcbb69d41c0",
+  "built_at_utc": "2026-10-31T15:04:19Z",
   "platform": "windows-x64",
   "filename": "StockJournal.exe",
-  "sha256": "0f2e5dac0b33caccff1d52bf4ff87301a8b39530457ca072be6846f4260350a1",
-  "size_bytes": 14439687,
+  "sha256": "6ff57b85d0cf357cabd420b1efecd7b49db290f0a8cdf56735bd9f546a332602",
+  "size_bytes": 14440187,
   "verification": {
     "source_gui": true,
     "frozen_gui": true,
-    "source_report_sha256": "10076baae466627f5ce5ab6877468c41fcf22a5197ac2b0b7d262ca02d091f85",
-    "frozen_report_sha256": "e836c1b0fba643ffc4acf8ae3d432a2b9e2fc78c485df931ae550985eb7c1558"
+    "source_report_sha256": "d660b169ab990395f73501beb5ff80437bbc483d88b33495d18f325dc45b6078",
+    "frozen_report_sha256": "df964095640cf8a8ee2156ae6daf61ece1d456bf07b943508a81bb2f4a870c06"
   }
 }
