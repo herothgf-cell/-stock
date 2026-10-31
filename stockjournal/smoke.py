@@ -71,6 +71,10 @@ def run(report_path=None,screenshot=None):
                         check(not app.automation_panel.cash_account_verified.get(),'cash account permission must start unconfirmed')
                         for index in (0,1,0):
                             app.strategy_tabs.select(index);root.update_idletasks();root.update()
+                            if index==1:
+                                log=app.automation_panel.log;page=app.pages[name]
+                                check(log.winfo_ismapped() and log.winfo_height()>=25,'Automation event log has no readable space')
+                                check(log.winfo_rooty()+log.winfo_height()<=page.winfo_rooty()+page.winfo_height(),'Automation event log clipped below page')
                         from zoneinfo import ZoneInfo
                         check(ZoneInfo('America/New_York').key=='America/New_York','exchange timezone data missing')
                     if screenshot:
@@ -99,7 +103,7 @@ def run(report_path=None,screenshot=None):
                 check(app.store.load()==state,'UI changed stored journal')
                 check((Path(__file__).parent/'resources'/'windows_ocr.ps1').is_file(),'OCR script missing')
                 check(not errors,'\n'.join(errors))
-                report['assertions']=['currency_separation','fees_and_cost_basis','sold_out_history','net_dividends','unpriced_valuation','account_filters','blocked_import','stored_state_unchanged','ocr_resource_present','visible_import_actions','visible_connection_actions','strategy_and_automation_pages','dry_run_default','cash_account_unconfirmed','exchange_timezone_data']
+                report['assertions']=['currency_separation','fees_and_cost_basis','sold_out_history','net_dividends','unpriced_valuation','account_filters','blocked_import','stored_state_unchanged','ocr_resource_present','visible_import_actions','visible_connection_actions','strategy_and_automation_pages','visible_automation_event_log','dry_run_default','cash_account_unconfirmed','exchange_timezone_data']
                 app.close();app=None;root=None;report['closed']=True
             finally:
                 if app:

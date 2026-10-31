@@ -79,20 +79,38 @@ class AutomationPanel:
         ttk.Label(self.parent, text="지정가: 현재가 × 매수 1.001 / 매도 0.999 · 정수 주수 · 수수료 여유 0.5%. 매도 전량 체결과 실제 USD 현금 증가 후 다음 매수를 진행합니다.",
             foreground="#536471", wraplength=1120).pack(anchor="w", pady=(0, 7))
         ttk.Label(self.parent, textvariable=self.status, wraplength=1120, foreground="#174e62").pack(fill="x", pady=(0, 7))
-        self.history = ttk.Treeview(self.parent, columns=("time", "mode", "status", "reason"), show="headings", height=4)
+        self.output_panes = ttk.Panedwindow(self.parent, orient="vertical")
+        self.output_panes.pack(fill="both", expand=True)
+        history_pane = ttk.Frame(self.output_panes)
+        orders_pane = ttk.Frame(self.output_panes)
+        log_pane = ttk.Frame(self.output_panes)
+        for pane in (history_pane, orders_pane, log_pane):
+            pane.columnconfigure(0, weight=1)
+            pane.rowconfigure(0, weight=1)
+            self.output_panes.add(pane, weight=1)
+        self.history = ttk.Treeview(history_pane, columns=("time", "mode", "status", "reason"), show="headings", height=2)
         for key, label, width in (("time", "시작 시각 (UTC)", 185), ("mode", "방식", 85), ("status", "상태", 145), ("reason", "확인 사항", 650)):
             self.history.heading(key, text=label)
             self.history.column(key, width=width, anchor="w")
-        self.history.pack(fill="x")
+        self.history.grid(row=0, column=0, sticky="nsew")
+        self.history_scrollbar = ttk.Scrollbar(history_pane, orient="vertical", command=self.history.yview)
+        self.history_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.history.configure(yscrollcommand=self.history_scrollbar.set)
         self.history.bind("<<TreeviewSelect>>", lambda event: self._show_selected())
-        self.orders = ttk.Treeview(self.parent, columns=("symbol", "side", "quantity", "price", "status", "kind"), show="headings", height=5)
+        self.orders = ttk.Treeview(orders_pane, columns=("symbol", "side", "quantity", "price", "status", "kind"), show="headings", height=2)
         for key, label, width in (("symbol", "종목", 100), ("side", "매매", 80), ("quantity", "주수", 80),
                 ("price", "지정가 USD", 130), ("status", "주문 상태", 160), ("kind", "전략 단계", 250)):
             self.orders.heading(key, text=label)
             self.orders.column(key, width=width, anchor="w")
-        self.orders.pack(fill="x", pady=8)
-        self.log = tk.Text(self.parent, height=5, wrap="word", state="disabled", font=("Malgun Gothic", 9), background="#ffffff")
-        self.log.pack(fill="both", expand=True)
+        self.orders.grid(row=0, column=0, sticky="nsew")
+        self.orders_scrollbar = ttk.Scrollbar(orders_pane, orient="vertical", command=self.orders.yview)
+        self.orders_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.orders.configure(yscrollcommand=self.orders_scrollbar.set)
+        self.log = tk.Text(log_pane, height=3, wrap="word", state="disabled", font=("Malgun Gothic", 9), background="#ffffff")
+        self.log.grid(row=0, column=0, sticky="nsew")
+        self.log_scrollbar = ttk.Scrollbar(log_pane, orient="vertical", command=self.log.yview)
+        self.log_scrollbar.grid(row=0, column=1, sticky="ns")
+        self.log.configure(yscrollcommand=self.log_scrollbar.set)
 
     def _guard(self, function):
         try:
