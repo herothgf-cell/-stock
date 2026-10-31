@@ -53,6 +53,11 @@ class JournalApp:
         self.settings = read_json(self.directory / 'settings.json', {}); self.quotes = read_json(self.directory / 'quotes.json', {})
         self.secrets = SecretStore(self.directory / 'secrets.bin')
         self.smoke = smoke; self.busy = False; self.queue = queue.Queue(); self.preview = None; self.chosen = set(); self.history_filter = None
+        self.preview_is_pending = False
+        from .broker_ui import BrokerController
+        self.broker = BrokerController(self)
+        from .automation_integration import AutomationBridge
+        self.automation_bridge = AutomationBridge(self)
         self.last_quote = 0; self.pending_sync = None
         root.title(f'주식 매매일지 · Stock Journal {__version__}')
         root.geometry(f"{min(1380,root.winfo_screenwidth()-24)}x{min(860,root.winfo_screenheight()-90)}")
@@ -70,9 +75,10 @@ class JournalApp:
         ttk.Button(header, text='시세 갱신', command=self.refresh_quotes).pack(side='right')
         self.tabs = ttk.Notebook(root); self.tabs.pack(fill='both', expand=True, padx=18)
         self.pages = {}
-        for key, label in [('dashboard', '한눈에 보기'), ('trades', '매매 기록'), ('imports', '일괄 가져오기'), ('dividends', '배당 관리'), ('instruments', '종목 관리'), ('settings', '설정 · 계좌')]:
+        for key, label in [('dashboard', '한눈에 보기'), ('trades', '매매 기록'), ('imports', '일괄 가져오기'), ('dividends', '배당 관리'), ('instruments', '종목 관리'), ('strategy', '200티큐'), ('settings', '설정 · 계좌')]:
             page = ttk.Frame(self.tabs, padding=14); self.pages[key] = page; self.tabs.add(page, text='  '+label+'  ')
         self.build_dashboard(); self.build_trades(); self.build_imports(); self.build_dividends(); self.build_instruments(); self.build_settings()
+        self.build_strategy()
         self.status = tk.StringVar(value='이 PC에 저장합니다. 다른 PC에서 보려면 비공개 기록 저장소를 연결하세요.')
         self.tabs.pack_forget()
         footer = ttk.Frame(root, padding=12); footer.pack(side='bottom',fill='x')
@@ -106,16 +112,20 @@ class JournalApp:
     def idle(self):
         if self.busy:
             raise ValueError('조회·동기화가 끝난 뒤 저장해 주세요.')
+        if hasattr(self, 'automation_panel') and self.automation_panel.busy:
+            raise ValueError('자동 실행의 주문·상태 점검이 끝난 뒤 진행해 주세요. 필요하면 새 주문 중지를 먼저 누르세요.')
 
     def backup(self):
         return self.store.backup(self.directory / 'backups' / (datetime.now().strftime('%Y%m%d-%H%M%S-%f')+'.sqlite3'))
 
-    def save(self, state, expected=None, autosync=True):
+    def save(self, state, expected=None, autosync=True, automation_apply=False):
         self.idle()
         if expected is not None and self.state != expected:
             raise ValueError('검토 중 원장이 변경되었습니다. 최신 내용을 다시 확인하세요.')
         validate_state(state)
         if state != self.state:
+            if not automation_apply and hasattr(self, 'automation_panel') and self.automation_panel.running:
+                self.automation_panel.stop()
             self.backup(); self.store.save(state); self.state = self.store.load()
             self.settings['dirty'] = True; write_json(self.directory / 'settings.json', self.settings)
         self.refresh(); self.status.set('기록을 이 PC에 저장했습니다.')
@@ -180,8 +190,8 @@ class JournalApp:
         self.instruments.pack(fill='both',expand=True)
 
     def build_settings(self):
-        page=self.pages['settings'];self.actions(page,[('계좌 추가',lambda:self.edit('accounts')),('계좌 수정',lambda:self.edit_selected('accounts',self.accounts)),('기록 백업 내보내기',self.export_backup),('백업 복원',self.restore_backup)])
-        self.accounts=Table(page,[('name','계좌 별칭',240),('broker','증권사',180),('kind','계좌 종류',130),('currency','기준 통화',100)],height=2);self.accounts.pack(fill='x',pady=(0,12))
+        page=self.pages['settings'];self.actions(page,[('계좌 추가',lambda:self.edit('accounts')),('계좌 수정',lambda:self.edit_selected('accounts',self.accounts)),('초기 입력 / 복원',self.restore_backup),('백업 내보내기',self.export_backup),('나무 계좌 가져오기',self.broker.discover),('나무 잔고 대조',self.broker.holdings)])
+        self.accounts=Table(page,[('name','계좌 별칭',220),('broker','증권사',160),('kind','계좌 종류',100),('currency','기준 통화',90),('mode','관리 방식',210)],height=2);self.accounts.pack(fill='x',pady=(0,12))
         panel=ttk.Notebook(page);panel.pack(fill='both',expand=True);self.connection_tabs=panel;self.settings_buttons=[]
         nh=ttk.Frame(panel,padding=15);gh=ttk.Frame(panel,padding=15);panel.add(nh,text='NH 연결');panel.add(gh,text='다른 PC와 동기화')
         self.setting_vars={}
@@ -194,13 +204,31 @@ class JournalApp:
             ttk.Label(parent,text=label).grid(row=row,column=0,sticky='w',padx=(0,16),pady=6)
             ttk.Entry(parent,textvariable=var,show='•' if secret else '',width=65).grid(row=row,column=1,sticky='ew',pady=6);parent.columnconfigure(1,weight=1)
         self.auto_quotes=tk.BooleanVar(value=self.settings.get('auto_quotes',False));self.auto_sync=tk.BooleanVar(value=self.settings.get('auto_sync',False))
-        ttk.Checkbutton(nh,text='앱 실행 중 국내 보유 종목 현재가 자동 갱신',variable=self.auto_quotes).grid(row=3,column=0,columnspan=2,sticky='w',pady=8)
+        ttk.Checkbutton(nh,text='앱 실행 중 국내·미국 보유 종목 현재가 자동 갱신',variable=self.auto_quotes).grid(row=3,column=0,columnspan=2,sticky='w',pady=8)
         ttk.Checkbutton(gh,text='실행 시 및 기록 저장 후 자동 동기화',variable=self.auto_sync).grid(row=3,column=0,columnspan=2,sticky='w',pady=8)
-        for parent,text in [(nh,'나무 PLUG 운영 키를 사용합니다. 30초 이상 간격의 현재가 조회입니다.\n해외 종목 가격은 직접 입력할 수 있습니다. 인증값은 이 PC에만 저장합니다.'),(gh,'별도 Private 저장소를 만들어 연결하세요. 공개 저장소에는 기록을 올리지 않습니다.\n토큰은 해당 저장소의 Contents 읽기/쓰기 권한이 필요합니다. 다른 PC에도 키를 각각 입력하세요.')]:
+        for parent,text in [(nh,'나무 PLUG 운영 키를 사용합니다. 국내·미국 현재가를 30초 이상 간격으로 조회합니다.\n계좌 목록·잔고·체결 조회를 연결할 수 있으며, 다른 증권사 계좌는 수동으로 관리합니다.'),(gh,'별도 Private 저장소를 만들어 연결하세요. 공개 저장소에는 기록을 올리지 않습니다.\n토큰은 해당 저장소의 Contents 읽기/쓰기 권한이 필요합니다. 다른 PC에도 키를 각각 입력하세요.')]:
             ttk.Label(parent,text=text,wraplength=1000,foreground='#536471').grid(row=4,column=0,columnspan=2,sticky='w',pady=12)
             button=ttk.Button(parent,text='설정 저장',command=lambda:self.safe(self.save_settings),style='Primary.TButton');button.grid(row=5,column=0,sticky='w');self.settings_buttons.append(button)
         ttk.Button(gh,text='지금 동기화',command=lambda:self.safe(self.sync)).grid(row=5,column=1,sticky='w')
         ttk.Label(page,text='기록 폴더: '+str(self.directory),foreground='#536471').pack(anchor='w',pady=10)
+
+    def build_strategy(self):
+        from .strategy_ui import StrategyPage
+        from .automation_ui import AutomationPanel
+        panel=ttk.Notebook(self.pages['strategy']);panel.pack(fill='both',expand=True);self.strategy_tabs=panel
+        decision=ttk.Frame(panel);execution=ttk.Frame(panel)
+        panel.add(decision,text='200티큐 판단 · 기록');panel.add(execution,text='자동 실행 · 주문 상태')
+        self.strategy_page=StrategyPage(self,decision)
+        self.automation_panel=AutomationPanel(self,execution)
+
+    def prepare_automation_context(self):
+        return self.automation_bridge.prepare()
+
+    def prepare_automation_broker(self):
+        return self.automation_bridge.prepare_broker()
+
+    def automation_fills(self, workflow):
+        return self.automation_bridge.fills(workflow)
 
     def edit_selected(self, collection, table):
         uid=table.selected()
@@ -280,7 +308,9 @@ class JournalApp:
             self.trades.tree.insert('','end',iid=row['id'],values=(row['executed_at'],self.state['accounts'][row['account_id']]['name'],{'BUY':'매수','SELL':'매도','OPENING':'기초'}[row['side']],self.state['instruments'][row['instrument_id']]['name'],money(row['quantity'],6),money(row['price'],4),money(row['fee']),money(row['tax']),row.get('memo','')))
         self.accounts.clear()
         for row in self.active('accounts'):
-            self.accounts.tree.insert('','end',iid=row['id'],values=tuple(row.get(k,'') for k in ('name','broker','kind','currency')))
+            from .broker_accounts import is_nh_account
+            mode=('나무 · 연결됨' if self.secrets.get('nh_account_'+row['id']) else '나무 · 이 PC 연결 필요') if is_nh_account(row) else '수동 관리'
+            self.accounts.tree.insert('','end',iid=row['id'],values=(*[row.get(k,'') for k in ('name','broker','kind','currency')],mode))
         self.receipts.clear();self.events.clear()
         from decimal import Decimal
         for row in self.active('dividends'):
@@ -295,6 +325,10 @@ class JournalApp:
         self.render_instruments();self.import_account_box.configure(values=['원본 계좌 유지',*choices])
         if self.import_account.get() not in choices:
             self.import_account.set('원본 계좌 유지')
+        if hasattr(self,'strategy_page'):
+            self.strategy_page.refresh()
+        if hasattr(self,'automation_panel'):
+            self.automation_panel.refresh()
 
     def render_instruments(self):
         if not hasattr(self,'instruments'):
@@ -329,7 +363,7 @@ class JournalApp:
         FormDialog(self.root,'가격 직접 입력',[('price',self.state['instruments'][uid]['currency']+' 현재가',self.quotes.get(uid,{}).get('price',''),None)],done,'입력 가격은 이 PC의 평가용 캐시에 저장합니다. 실제 체결 내역을 변경하지 않습니다.')
 
     def build_imports(self):
-        page=self.pages['imports'];bar=self.actions(page,[('엑셀 / CSV 열기',self.import_file),('이미지 OCR',self.import_image),('NH 체결 조회',self.import_nh)])
+        page=self.pages['imports'];bar=self.actions(page,[('엑셀 / CSV 열기',self.import_file),('이미지 OCR',self.import_image),('NH 체결 조회',self.import_nh),('초기 보류 자료',self.pending_import)])
         self.import_account=tk.StringVar(value='원본 계좌 유지');self.import_account_box=ttk.Combobox(bar,textvariable=self.import_account,state='readonly',width=28);self.import_account_box.pack(side='right')
         ttk.Label(bar,text='저장할 계좌').pack(side='right',padx=8)
         source=ttk.LabelFrame(page,text='카톡·체결 텍스트',padding=8);source.pack(fill='x',pady=(0,10))
@@ -345,9 +379,30 @@ class JournalApp:
         ttk.Checkbutton(page,text='참고 배당 일정도 가져오기',variable=self.include_events).pack(side='left')
         ttk.Checkbutton(page,text='같은 외부 거래 갱신 허용 (NH 주문별 누적체결, 검토 후 선택)',variable=self.update_orders).pack(side='left',padx=15)
 
-    def load_preview(self,preview):
+    def load_preview(self,preview,pending=False):
         validate_ids(preview);self.preview=preview;self.chosen=selectable(preview);self.update_orders.set(False)
+        self.preview_is_pending=pending
+        self.import_account.set('원본 계좌 유지')
+        bound={row['_bound_account_id'] for row in preview.trades if row.get('_bound_account_id')}
+        if len(bound)==1:
+            label=next((label for label,uid in account_choices(self.state).items() if uid in bound),None)
+            if label:self.import_account.set(label)
         self.render_preview();self.tabs.select(self.pages['imports']);self.status.set('검토 대기: 아직 원장에 저장하지 않았습니다.')
+
+    def pending_import(self):
+        from .initialization import preview_from_dict
+        path=self.directory/'pending-import.json'
+        if not path.exists():
+            messagebox.showinfo('보류 자료','보관된 초기 입력 보류 자료가 없습니다.',parent=self.root);return
+        self.load_preview(preview_from_dict(read_json(path,{})),pending=True)
+
+    def persist_pending(self,remove_saved=False):
+        if not self.preview_is_pending or not self.preview:return
+        from dataclasses import asdict
+        pending=copy.deepcopy(self.preview)
+        for key in ('trades','dividends','dividend_events'):
+            setattr(pending,key,[r for r in getattr(pending,key) if r['id'] not in self.state[key]])
+        write_json(self.directory/'pending-import.json',asdict(pending))
 
     def preview_state(self):
         state=copy.deepcopy(self.state)
@@ -429,14 +484,14 @@ class JournalApp:
                 self.chosen.difference_update(r['id'] for r in pair)
                 if not any(r.get('_blocked') for r in pair):
                     self.chosen.update(r['id'] for r in pair)
-            self.render_preview()
+            self.render_preview();self.persist_pending()
         self.edit(collection,rows[index],preview_callback=done,preview_state=self.preview_state())
 
     def exclude_import_event(self):
         uid=self.import_table.selected()
         if uid and not uid.startswith('trades/'):
             key,identifier=uid.split('/',1);row=next(r for r in getattr(self.preview,key) if r['id']==identifier)
-            row.update(_blocked=True,_warnings=['사용자가 제외했습니다. 다시 포함하려면 수정하세요.']);self.render_preview()
+            row.update(_blocked=True,_warnings=['사용자가 제외했습니다. 다시 포함하려면 수정하세요.']);self.render_preview();self.persist_pending()
 
     def commit_import(self):
         self.idle()
@@ -445,7 +500,7 @@ class JournalApp:
         expected=copy.deepcopy(self.state);target=account_choices(self.state).get(self.import_account.get())
         result,stats=stage_import(expected,self.preview,self.chosen,target,self.include_events.get(),self.update_orders.get())
         if messagebox.askyesno('검토 기록 저장',f"거래/수령 추가 {stats['added']}건 · 갱신 {stats['updated']}건\n참고 일정 {stats['events']}건 · 제외/중복 {stats['skipped']}건\n\n이 내용으로 저장할까요?",parent=self.root):
-            self.save(result,expected);self.render_preview()
+            self.save(result,expected);self.render_preview();self.persist_pending(remove_saved=True)
 
     def save_settings(self):
         self.idle();values={k:v.get().strip() for k,v in self.setting_vars.items()};interval=int(values['quote_interval'])
@@ -485,9 +540,9 @@ class JournalApp:
             return
         try:
             ids={r['instrument_id'] for r in portfolio(self.state)['rows'] if r['quantity']>0}
-            instruments=[self.state['instruments'][uid] for uid in ids if self.state['instruments'][uid]['market']=='KR']
+            instruments=[self.state['instruments'][uid] for uid in ids if self.state['instruments'][uid]['market'] in ('KR','US')]
             if not instruments:
-                self.status.set('조회할 국내 보유 종목이 없습니다.');return
+                self.status.set('조회할 국내·미국 보유 종목이 없습니다.');return
             provider=self.provider()
         except Exception as exc:
             if not quiet:
@@ -495,7 +550,7 @@ class JournalApp:
             return
         def done(quotes):
             self.quotes.update(quotes);write_json(self.directory/'quotes.json',self.quotes);self.last_quote=time.time();self.refresh();self.status.set(f'NH 현재가 {len(quotes)}종목 갱신 · 주기 조회')
-        self.work('국내 보유 종목 현재가를 조회합니다…',lambda:provider.quotes(instruments),done)
+        self.work('국내·미국 보유 종목 현재가를 조회합니다…',lambda:provider.quotes(instruments),done)
 
     def tick(self):
         if not self.smoke and self.settings.get('auto_quotes') and time.time()-self.last_quote>max(30,int(self.settings.get('quote_interval',60))):
@@ -503,22 +558,7 @@ class JournalApp:
         self.root.after(15000,self.tick)
 
     def import_nh(self):
-        choices=account_choices(self.state)
-        if not choices:
-            raise ValueError('먼저 계좌를 등록하세요.')
-        def query(values):
-            api=self.provider();self.secrets.set('nh_account_'+values['account_id'],values['number'])
-            def done(rows):
-                from .importers import ImportPreview
-                instruments={}
-                for row in rows:
-                    row['account_id']=values['account_id'];uid=row['instrument_id']
-                    if uid not in self.state['instruments']:
-                        instruments[uid]=record(id=uid,market='KR',code=uid.split(':',1)[1],name=row.get('_instrument_name') or uid,currency='KRW',asset_type='주식',sector='')
-                self.load_preview(ImportPreview(instruments=list(instruments.values()),trades=rows,issues=['기간 이전 보유분은 먼저 기초 보유나 과거 거래로 등록하세요.','주문별 누적 체결입니다. 반복 조회한 주문을 갱신하려면 검토 후 갱신 허용을 선택하세요.']))
-            self.work('NH 체결을 조회합니다…',lambda:api.trades(values['number'],values['start'],values['end']),done)
-        selected=self.account_id() or next(iter(choices.values()))
-        FormDialog(self.root,'NH 체결 가져오기',[('account_id','저장 계좌',selected,choices),('number','계좌번호',self.secrets.get('nh_account_'+selected),None),('start','시작일',today()[:8]+'01',None),('end','종료일',today(),None)],query,'조회만 수행합니다. 수수료·세금·동일 날짜 거래 순서는 증권사 원장과 비교하세요.')
+        self.broker.import_trades()
 
     def sync(self,resolutions=None):
         self.pending_sync=None
@@ -571,10 +611,31 @@ class JournalApp:
 
     def restore_backup(self):
         self.idle();expected=copy.deepcopy(self.state)
-        path=filedialog.askopenfilename(parent=self.root,filetypes=[('JSON 기록 백업','*.json')])
+        path=filedialog.askopenfilename(parent=self.root,filetypes=[('초기 입력 / JSON 기록 백업','*.json')])
         if not path:
             return
-        state=json.loads(Path(path).read_text(encoding='utf-8'));validate_state(state)
+        if Path(path).stat().st_size>20_000_000:
+            raise ValueError('입력 파일은 20MB 이하여야 합니다.')
+        payload=json.loads(Path(path).read_text(encoding='utf-8-sig'))
+        from .initialization import FORMAT,merge_package,merge_pending,preview_from_dict
+        if isinstance(payload,dict) and payload.get('format')==FORMAT:
+            state,pending,stats=merge_package(expected,payload)
+            pending_path=self.directory/'pending-import.json'
+            if pending_path.exists():
+                pending=merge_pending(preview_from_dict(read_json(pending_path,{})),pending,state)
+            message=(f"초기 계좌 {len(payload['state']['accounts'])}개 · 거래 {len(payload['state']['trades'])}건\n"
+                     f"참고 배당 일정 {len(payload['state']['dividend_events'])}건 · 보류 거래 {len(pending.trades)}건\n\n"
+                     '기존 원장에 합치고 중복 ID는 건너뜁니다. 원본에 없는 비용은 0으로 표시되며, 완료 거래의 매도 단가는 원본 값을 대조해야 합니다.\n보류 자료는 별도로 보관하여 수정할 수 있습니다. 진행할까요?')
+            if messagebox.askyesno('초기 자료 입력',message,parent=self.root):
+                from dataclasses import asdict
+                self.save(state,expected=expected,autosync=False)
+                write_json(self.directory/'pending-import.json',asdict(pending))
+                self.settings['initialization_source']=payload['source'];write_json(self.directory/'settings.json',self.settings)
+                if pending.trades or pending.dividends or pending.dividend_events:
+                    self.load_preview(pending,pending=True)
+                self.status.set(f"초기 자료 입력 · 추가 {stats['added']}건 · 보류 거래 {len(pending.trades)}건. 원본 매도가·수수료를 확인하세요.")
+            return
+        state=payload;validate_state(state)
         if messagebox.askyesno('백업 복원','현재 기록을 백업한 뒤 선택한 원장으로 교체할까요?',parent=self.root):
             self.save(state,expected=expected,autosync=False)
 
@@ -596,6 +657,9 @@ class JournalApp:
     def close(self):
         if self.busy:
             messagebox.showinfo('작업 진행 중','조회·동기화가 끝난 뒤 종료해 주세요.',parent=self.root);return
+        if hasattr(self,'automation_panel'):
+            if not self.automation_panel.close():
+                return
         if not self.smoke:
             self.backup()
         self.store.close();self.lock.close();self.root.destroy()

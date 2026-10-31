@@ -47,7 +47,7 @@ _ALIASES = {
     "account_currency": ("account_currency", "계좌통화"),
     "broker": ("broker", "증권사"),
     "kind": ("kind", "account_type", "계좌유형"),
-    "code": ("code", "ticker", "symbol", "종목코드", "종목번호", "코드"),
+    "code": ("code", "ticker", "ticket", "symbol", "종목코드", "종목번호", "코드"),
     "name": ("name", "종목명", "주식명"),
     "market": ("market", "exchange", "시장", "거래소"),
     "currency": ("currency", "통화"),
@@ -550,10 +550,14 @@ def preview_workbook(path: str | Path) -> ImportPreview:
     try:
         formulas = load_workbook(Path(path), data_only=False, read_only=False, keep_links=False)
         try:
+            legacy_layout = '종목' in values.sheetnames and '매매일지' in values.sheetnames
             if "종목" in values.sheetnames:
                 _legacy_instruments(builder, values["종목"], formulas["종목"])
             for sheet in values:
                 if sheet.title == "종목":
+                    continue
+                if legacy_layout and sheet.title not in ('매매일지', '배당정보'):
+                    builder.preview.issues.append(f"'{sheet.title}' 보조 시트는 가져오지 않았습니다. 기존 형식은 종목·매매일지·배당정보만 읽어 집계값 중복을 방지합니다.")
                     continue
                 if sheet.title == "매매일지":
                     _legacy_trades(builder, sheet, formulas[sheet.title], values.epoch)

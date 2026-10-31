@@ -18,3 +18,7 @@ backups/
 private/
 journal.json
 secrets.bin
+*.stockjournal.json
+pending-import.json
+execution-local.*
+machine-id.txt

@@ -3,7 +3,7 @@ import io
 import json
 import tempfile
 import unittest
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
@@ -160,13 +160,188 @@ class NHProviderTests(unittest.TestCase):
         self.assertEqual(json.loads(query.data), {"Input_0": {"iem_cd": "005930", "market_cd": "UNT"}})
         headers = {k.lower(): v for k, v in query.header_items()}
         self.assertEqual(headers["authorization"], "Bearer test-token")
-        self.assertEqual(headers["x-client-id"], "fixture-key")
-        self.assertEqual(headers["x-client-secret"], "fixture-secret")
+        self.assertNotIn("x-client-id", headers)
+        self.assertNotIn("x-client-secret", headers)
 
-    def test_quotes_skip_foreign_instruments_without_an_auth_request(self):
+    def test_quotes_skip_unsupported_markets_without_an_auth_request(self):
         http = FixtureHTTP()
-        self.assertEqual(self.provider(http).quotes([{"id": "US:AAPL", "market": "US", "code": "AAPL"}]), {})
+        self.assertEqual(self.provider(http).quotes([{"id": "JP:7203", "market": "JP", "code": "7203"}]), {})
         self.assertEqual(http.requests, [])
+
+    def test_us_quotes_use_documented_ticker_and_currency(self):
+        http = FixtureHTTP(token(), Response({"Output_0": {"iem_cd": "TQQQ", "trdprc": "49.125",
+                                                           "currency_unit": "USD", "trade_date": "20261001"}}))
+        actual = self.provider(http).quotes([{"id": "US:TQQQ", "market": "US", "code": "TQQQ", "currency": "USD"}])
+        self.assertEqual(actual["US:TQQQ"]["price"], "49.125")
+        self.assertEqual(actual["US:TQQQ"]["currency"], "USD")
+        self.assertEqual(http.requests[1].full_url, "https://api.nhplug.com:8443/gbstock/quote/v1/current")
+        self.assertEqual(json.loads(http.requests[1].data), {"Input_0": {"iem_cd": "TQQQ"}})
+
+    def test_us_quote_rejects_mismatched_symbol_or_currency(self):
+        for change in ({"iem_cd": "AAPL"}, {"currency_unit": "JPY"}):
+            output = {"iem_cd": "TQQQ", "trdprc": "50", "currency_unit": "USD", **change}
+            with self.subTest(change=change), self.assertRaises(ProviderError):
+                self.provider(FixtureHTTP(token(), Response({"Output_0": output}))).quotes([
+                    {"id": "US:TQQQ", "market": "US", "code": "TQQQ", "currency": "USD"}])
+
+    def test_discovery_exposes_live_mock_and_unknown_accounts_without_persisting_numbers(self):
+        http = FixtureHTTP(token(), Response({"rsp_msg": "조회가 완료되었습니다.", "cust_no": "private-customer",
+            "Output_0": [{"acct_no": "12345678901", "acct_type": "01"},
+                         {"acct_no": "12345678902", "acct_type": "03"},
+                         {"acct_no": "12345678903", "acct_type": "99"}]}))
+        actual = self.provider(http).discover_accounts()
+        self.assertEqual([(a["account_type"], a["environment"], a["usable"]) for a in actual],
+                         [("01", "live", True), ("03", "mock", False), ("99", "unknown", False)])
+        self.assertEqual(actual[0]["account_number"], "12345678901")
+        self.assertEqual(actual[0]["masked_number"], "*******8901")
+        self.assertNotIn("private-customer", json.dumps(actual))
+        self.assertEqual(http.requests[1].full_url, "https://api.nhplug.com:8443/n2/acctinfo")
+        self.assertEqual(json.loads(http.requests[1].data), {"Input_0": {}})
+        self.assertEqual(list(Path(self.directory.name).rglob("*.bin")), [])
+
+    def test_account_discovery_does_not_hide_malformed_or_ambiguous_rows(self):
+        for rows in ([{"acct_no": "bad", "acct_type": "01"}],
+                     [{"acct_no": "12345678901", "acct_type": "01"}, {"acct_no": "12345678901", "acct_type": "03"}], []):
+            with self.subTest(rows=rows), self.assertRaises(ProviderError):
+                self.provider(FixtureHTTP(token(), Response({"Output_0": rows}))).discover_accounts()
+
+    def test_common_message_envelope_preserves_empty_result_and_rejects_errors(self):
+        http = FixtureHTTP(token(), Response({"message": {"code": "NO_ROWS", "msg": "조회내역이 없습니다."}}))
+        self.assertEqual(self.provider(http).discover_accounts(), [])
+        http = FixtureHTTP(token(), Response({"message": {"code": "BAD", "msg": "계좌 권한 오류 fixture-secret"},
+            "Output_0": [{"acct_no": "12345678901", "acct_type": "01"}]}))
+        with self.assertRaises(ProviderError) as caught:
+            self.provider(http).discover_accounts()
+        self.assertNotIn("fixture-secret", str(caught.exception))
+
+    def test_domestic_holdings_collect_pages_and_only_use_final_summary(self):
+        row = {"iem_cd": "005930", "iem_nm": "삼성전자", "tp_cd_nm": "현금", "itg_bnc_qty": "3",
+               "phs_pr": "70000", "now_pr": "69000", "eal_amt": "207000", "eal_pls_amt": "-3000"}
+        http = FixtureHTTP(token(), Response({"Output_0": {"tot_eal_amt": 0}, "Output_1": [row]},
+                                            {"cts": "holdings-next", "cts_flag": "Y"}),
+                           Response({"Output_0": {"dca": "5000", "tot_eal_amt": "207000", "tot_eal_pls": "-3000"},
+                                     "Output_1": [row]}, {"cts_flag": "N"}))
+        snapshot = self.provider(http).get_holdings("12345678901")
+        self.assertEqual(len(snapshot["holdings"]), 1)
+        position = snapshot["holdings"][0]
+        self.assertEqual((position["instrument_id"], position["quantity"], position["average_price"], position["market_value"],
+                          position["unrealized_pnl"]), ("KR:005930", "3", "70000", "207000", "-3000"))
+        self.assertIsNone(position["book_value"])
+        self.assertEqual(snapshot["summary"]["tot_eal_amt"], "207000")
+        self.assertNotIn("12345678901", json.dumps(snapshot))
+        self.assertEqual(json.loads(http.requests[1].data), {"Input_0": {
+            "act_no": "12345678901", "bnc_bse_cd": "5", "ltg_aot_dit_cd": "9", "aet_bse": "2",
+            "qut_dit_cd": "UNT", "aly_qut_cd": "1"}})
+        self.assertEqual(http.requests[2].get_header("Cts"), "holdings-next")
+
+    def test_us_holdings_preserve_broker_cost_and_finite_decimal_values(self):
+        row = {"fc_sec_trd_nat_cd": "200", "iem_cd": "TQQQ", "iem_nm": "PROSHARES ULTRAPRO QQQ",
+               "cns_bse_bnc_qty": "7", "fc_phs_uit_pr": "40.125", "fc_sec_end_pr": "42.25",
+               "fc_eal_amt": "295.75", "fc_abk_amt": "280.875", "fc_eal_pls_amt": "14.875",
+               "cur_cd": "USD", "cfd_lon_cd_nm": "현금"}
+        http = FixtureHTTP(token(), Response({"Output_0": {"fc_dca": "100.125"}, "Output_1": [row]}))
+        snapshot = self.provider(http).get_holdings("12345678901", overseas=True)
+        position = snapshot["holdings"][0]
+        self.assertEqual((position["instrument_id"], position["market"], position["currency"], position["book_value"]),
+                         ("US:TQQQ", "US", "USD", "280.875"))
+        self.assertEqual(snapshot["summary"]["fc_dca"], "100.125")
+        self.assertEqual(json.loads(http.requests[1].data), {"Input_0": {"act_no": "12345678901",
+            "qut_iqr_dit_cd": "9", "fc_sec_trd_nat_cd": "200", "cur_cd": "USD", "xns_dit_cd": "1"}})
+
+    def test_holdings_reject_incomplete_pages_conflicting_positions_and_nested_errors(self):
+        row = {"iem_cd": "005930", "iem_nm": "삼성전자", "tp_cd_nm": "현금", "itg_bnc_qty": "3", "phs_pr": "10"}
+        for pages in ([Response({"Output_1": [row]}, {"cts_flag": "Y"})],
+                      [Response({"Output_1": [row, {**row, "itg_bnc_qty": "4"}]})],
+                      [Response({"Output_1": [row], "message": {"msg_code": "BAD", "usr_msg": "조회 권한이 없습니다."}})],
+                      [Response({"Output_1": []})]):
+            with self.subTest(), self.assertRaises(ProviderError):
+                self.provider(FixtureHTTP(token(), *pages)).get_holdings("12345678901")
+
+    def test_explicit_empty_holdings_preserve_cash_summary(self):
+        http = FixtureHTTP(token(), Response({"message": {"usr_msg": "조회 내역이 없습니다."}, "Output_0": {"dca": "100"}}))
+        snapshot = self.provider(http).get_holdings("12345678901")
+        self.assertEqual(snapshot["holdings"], [])
+        self.assertEqual(snapshot["summary"], {"dca": "100"})
+
+    def test_overseas_cash_orders_map_to_existing_trade_schema(self):
+        row = {"orr_no": 12, "org_orr_no": 0, "oss_sby_dit_cd": "2", "sby_dit_nm": "매수",
+               "fc_sec_trd_nat_cd": "200", "iem_cd": "TQQQ", "iem_nm": "PROSHARES ULTRAPRO QQQ",
+               "cns_qty": 5, "cns_pr": "47.123456", "cfd_lon_cd": "00", "orr_dt": "20261001",
+               "cor_qty": 0, "can_qty": 0}
+        http = FixtureHTTP(token(), trade_page([row]))
+        actual = self.provider(http).overseas_trades("12345678901", "2026-10-01", "2026-10-01")
+        self.assertEqual(len(actual), 1)
+        actual = actual[0]
+        self.assertEqual((actual["instrument_id"], actual["quantity"], actual["price"], actual["side"], actual["currency"]),
+                         ("US:TQQQ", "5", "47.123456", "BUY", "USD"))
+        self.assertEqual((actual["_instrument_market"], actual["_instrument_code"], actual["_instrument_currency"]),
+                         ("US", "TQQQ", "USD"))
+        self.assertTrue(actual["id"].startswith("nh-us:"))
+        self.assertNotIn("12345678901", json.dumps(actual))
+        self.assertEqual(json.loads(http.requests[1].data), {"Input_0": {"orr_dt": "20261001", "act_no": "12345678901",
+                         "oss_sby_dit_cd": "0", "sot_dit": "0", "ost_cns_dit": "1"}})
+
+    def test_overseas_orders_reject_corrections_non_us_credit_and_date_conflicts(self):
+        row = {"orr_no": 1, "org_orr_no": 0, "oss_sby_dit_cd": "2", "fc_sec_trd_nat_cd": "200",
+               "iem_cd": "TQQQ", "cns_qty": 1, "cns_pr": "50", "cfd_lon_cd": "00", "orr_dt": "20261001"}
+        for changes in ({"org_orr_no": 1}, {"cor_qty": 1}, {"can_qty": 1}, {"fc_sec_trd_nat_cd": "120"},
+                        {"cfd_lon_cd": "03"}, {"oss_sby_dit_cd": "0"}, {"orr_dt": "20261002"},
+                        {"org_orr_no": False}, {"cor_qty": False}, {"can_qty": False}):
+            with self.subTest(changes=changes), self.assertRaises(ProviderError):
+                self.provider(FixtureHTTP(token(), trade_page([{**row, **changes}]))).overseas_trades(
+                    "12345678901", "2026-10-01", "2026-10-01")
+
+    def test_daily_prices_are_historical_regular_sessions_with_unknown_adjustment(self):
+        rows = [{"trade_date": "20261002", "open_prc": "49", "high": "52", "low": "48", "close_prc": "51", "movolume": 100},
+                {"trade_date": "20261001", "open_prc": "48", "high": "50", "low": "47", "close_prc": "49", "movolume": 90}]
+        http = FixtureHTTP(token(), Response({"Output_1": rows}))
+        actual = self.provider(http).overseas_daily_prices("TQQQ", "2026-10-02", count=260)
+        self.assertEqual([row["date"] for row in actual["rows"]], ["2026-10-01", "2026-10-02"])
+        self.assertEqual(actual["rows"][0]["close"], "49")
+        self.assertEqual((actual["session"], actual["adjustment"], actual["currency"]), ("regular", "unknown", "USD"))
+        self.assertTrue(actual["warnings"])
+        self.assertEqual(json.loads(http.requests[1].data), {"Input_0": {"iem_cd": "TQQQ", "end_dt": "20261002",
+            "count": "0260", "maxavg": "200", "gubun": "3", "xtick": "0001", "today_cls": "0", "market_cls": "1"}})
+
+    def test_daily_prices_reject_duplicates_invalid_ohlc_and_dates_after_cutoff(self):
+        row = {"trade_date": "20261001", "open_prc": "49", "high": "51", "low": "48", "close_prc": "50", "movolume": 100}
+        for rows in ([row, row], [{**row, "high": "49"}], [{**row, "trade_date": "20261003"}],
+                     [{**row, "trade_date": "20261301"}], [{**row, "close_prc": "NaN"}]):
+            with self.subTest(rows=rows), self.assertRaises(ProviderError):
+                self.provider(FixtureHTTP(token(), Response({"Output_1": rows}))).overseas_daily_prices("TQQQ", "2026-10-02")
+
+    def test_daily_prices_use_conservative_new_york_close_and_weekend_cutoff(self):
+        cases = [(datetime(2026, 10, 2, 20, 9, tzinfo=timezone.utc), "2026-10-01"),
+                 (datetime(2026, 10, 2, 20, 10, tzinfo=timezone.utc), "2026-10-02"),
+                 (datetime(2026, 10, 4, 21, 0, tzinfo=timezone.utc), "2026-10-02")]
+        for now, expected in cases:
+            http = FixtureHTTP(token(), Response({"rsp_msg": "조회내역이 없습니다."}))
+            with self.subTest(now=now), patch.object(providers, "datetime") as clock:
+                clock.now.return_value = now
+                snapshot = self.provider(http).overseas_daily_prices("TQQQ", "2026-10-04")
+            self.assertEqual(snapshot["end_date"], expected)
+            self.assertEqual(snapshot["finalization"], "completed_sessions")
+            self.assertEqual(json.loads(http.requests[1].data)["Input_0"]["end_dt"], expected.replace("-", ""))
+
+    def test_daily_prices_respect_published_holiday_and_early_close(self):
+        cases = [(datetime(2026, 11, 26, 22, 0, tzinfo=timezone.utc), "2026-11-25"),
+                 (datetime(2026, 11, 27, 18, 10, tzinfo=timezone.utc), "2026-11-27")]
+        for now, expected in cases:
+            http = FixtureHTTP(token(), Response({"rsp_msg": "조회내역이 없습니다."}))
+            with self.subTest(now=now), patch.object(providers, "datetime") as clock:
+                clock.now.return_value = now
+                snapshot = self.provider(http).overseas_daily_prices("TQQQ")
+            self.assertEqual(snapshot["end_date"], expected)
+            self.assertEqual(snapshot["finalization_policy"], "published_calendar_close_plus_10m")
+
+    def test_queries_throttle_before_followup_without_reissuing_token(self):
+        http = FixtureHTTP(token(), quote(), quote())
+        provider = self.provider(http)
+        with patch.object(providers.time, "monotonic", return_value=50), patch.object(providers.time, "sleep") as sleep:
+            provider.quotes([INSTRUMENT])
+            provider.quotes([INSTRUMENT])
+        self.assertEqual(len(http.requests), 3)
+        self.assertEqual(sleep.call_args.args[0], 0.25)
 
     def test_quotes_reject_invalid_or_nonpositive_prices(self):
         for value in ("0", "-5", "NaN", "Infinity", "", None, "7,00", True):

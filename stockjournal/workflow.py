@@ -55,6 +55,25 @@ def selectable(preview):
     return ids
 
 
+def resolve_accounts(current, rows, account_override=None):
+    """Resolve aliases once for staging and repeatable initialization imports."""
+    accounts = copy.deepcopy(current); account_map = {}
+    for row in rows:
+        item = record(**clean(row)); uid = item['id']
+        if account_override:
+            account_map[uid] = account_override; continue
+        exact = accounts.get(uid)
+        if exact and exact.get('deleted'):
+            raise ValueError('삭제된 계좌와 연결됩니다. 저장할 계좌를 지정하세요.')
+        named = [r for r in accounts.values() if not r.get('deleted') and r['name'].strip() == item['name'].strip()]
+        matches = [r for r in named if all(not item.get(k) or not r.get(k) or item[k] == r[k] for k in ('broker', 'kind', 'currency'))]
+        if not exact and named and len(matches) != 1:
+            raise ValueError('같은 이름의 계좌가 모호합니다. 저장할 계좌를 직접 지정하세요.')
+        target = uid if exact else matches[0]['id'] if matches else uid
+        accounts.setdefault(target, item); account_map[uid] = target
+    return accounts, account_map
+
+
 def stage_import(current, preview, selected=None, account_override=None, include_events=True, update_existing=False):
     from .domain import validate_state
     validate_ids(preview)
@@ -63,20 +82,8 @@ def stage_import(current, preview, selected=None, account_override=None, include
         included = [r for r in rows if r['id'] in chosen and not r.get('_blocked')]
         if included and len(included) != len(rows):
             raise ValueError('매도 완료 물량은 연결된 매수·매도를 함께 검토하고 선택하세요. 한쪽만 저장하지 않았습니다.')
-    state = copy.deepcopy(current); account_map = {}; stats = {'added': 0, 'updated': 0, 'skipped': 0, 'events': 0}
-    for row in preview.accounts:
-        item = record(**clean(row)); uid = item['id']
-        if account_override:
-            account_map[uid] = account_override; continue
-        exact = state['accounts'].get(uid)
-        if exact and exact.get('deleted'):
-            raise ValueError('삭제된 계좌와 연결됩니다. 저장할 계좌를 지정하세요.')
-        named = [r for r in state['accounts'].values() if not r.get('deleted') and r['name'].strip() == item['name'].strip()]
-        matches = [r for r in named if all(not item.get(k) or not r.get(k) or item[k] == r[k] for k in ('broker', 'kind', 'currency'))]
-        if not exact and named and len(matches) != 1:
-            raise ValueError('같은 이름의 계좌가 모호합니다. 저장할 계좌를 직접 지정하세요.')
-        target = uid if exact else matches[0]['id'] if matches else uid
-        state['accounts'].setdefault(target, item); account_map[uid] = target
+    state = copy.deepcopy(current); stats = {'added': 0, 'updated': 0, 'skipped': 0, 'events': 0}
+    state['accounts'], account_map = resolve_accounts(state['accounts'], preview.accounts, account_override)
     for row in preview.instruments:
         item = record(**clean(row)); existing = state['instruments'].get(item['id'])
         if existing and existing.get('deleted'):
@@ -93,6 +100,8 @@ def stage_import(current, preview, selected=None, account_override=None, include
             item = record(**clean(row))
             if 'account_id' in item:
                 item['account_id'] = account_override or account_map.get(item['account_id'], item['account_id'])
+            if row.get('_bound_account_id') and item.get('account_id') != row['_bound_account_id']:
+                raise ValueError('NH에서 조회한 계좌와 저장할 계좌가 다릅니다. 원래 조회 계좌를 유지하세요.')
             previous = state[key].get(item['id'])
             if previous:
                 if previous.get('deleted'):

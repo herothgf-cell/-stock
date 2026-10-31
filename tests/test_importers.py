@@ -71,6 +71,35 @@ class ImporterTests(unittest.TestCase):
             datetime.fromisoformat(row["updated_at"].replace("Z", "+00:00"))
             self.assertIs(row["deleted"], False)
 
+    def test_google_sheet_ticket_header_is_not_a_trade_or_an_account(self):
+        target = self.legacy_workbook()
+        from openpyxl import load_workbook
+        book = load_workbook(target)
+        sheet = book['매매일지']
+        sheet['A1'] = '구매 일자'
+        sheet['B1'] = 'ticket'
+        sheet['F1'] = '계좌 구분'
+        sheet['G1'] = '상품명'
+        sheet['I1'] = '체결 가격'
+        book.save(target)
+        book.close()
+        preview = self.importers().preview_workbook(target)
+        self.assertEqual(len(preview.trades), 1)
+        self.assertEqual([r['name'] for r in preview.accounts], ['연금'])
+        self.assertNotIn('US:TICKET', [r['id'] for r in preview.instruments])
+
+    def test_legacy_workbook_summary_is_not_imported_as_actual_dividend(self):
+        target=self.legacy_workbook()
+        from openpyxl import load_workbook
+        book=load_workbook(target)
+        report=book.create_sheet('보고서')
+        report.append(['account','ticket','paid_date','gross','tax'])
+        report.append(['연금','00680K','2025-03-31',1000,0])
+        book.save(target);book.close()
+        preview=self.importers().preview_workbook(target)
+        self.assertEqual(preview.dividends,[])
+        self.assertTrue(any('보고서' in issue for issue in preview.issues))
+
     def test_purchase_identity_does_not_change_when_legacy_row_closes(self):
         first = self.importers().preview_workbook(self.legacy_workbook(quote=71000))
         second = self.importers().preview_workbook(self.legacy_workbook(closed=True, quote=80000))

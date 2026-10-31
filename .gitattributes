@@ -1,0 +1,3 @@
+# Store the executable itself in ordinary Git so a normal clone is runnable.
+/StockJournal.exe binary
+/StockJournal-build.json text eol=lf

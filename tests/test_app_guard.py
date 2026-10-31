@@ -26,6 +26,13 @@ class Value:
 
 
 class AppGuardTests(unittest.TestCase):
+    def test_new_preview_does_not_reuse_previous_import_account(self):
+        app=self.app
+        app.import_account=Value('Main');app.update_orders=Value(True)
+        app.tabs=SimpleNamespace(select=lambda page:None);app.pages={'imports':'imports'}
+        app.load_preview(preview())
+        self.assertEqual(app.import_account.get(),'원본 계좌 유지')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
