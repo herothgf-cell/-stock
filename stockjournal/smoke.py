@@ -47,7 +47,7 @@ def run(report_path=None,screenshot=None):
             root=tk.Tk();errors=[];root.report_callback_exception=lambda kind,value,tb:errors.append(''.join(traceback.format_exception(kind,value,tb)))
             try:
                 app=JournalApp(root,directory,smoke=True)
-                root.geometry(f"{min(1380,root.winfo_screenwidth()-24)}x{min(860,root.winfo_screenheight()-85)}+10+10")
+                root.geometry(f"{min(1380,root.winfo_screenwidth()-24)}x{min(860,root.winfo_screenheight()-90)}+10+10")
                 app.quotes={'KR:0000A0':{'price':'130','as_of':'2026-01-03T12:00:00+09:00','source':'합성 시세'}};app.refresh()
                 candidate=copy.deepcopy(state['trades']['buy1']);candidate.update(id='preview1',executed_at='2026-01-04',_blocked=False,_warnings=['수수료·세금 확인 예시'])
                 blocked=dict(candidate,id='preview2',side='SELL',_blocked=True,_warnings=['날짜·금액 수정 필요 예시'])
@@ -55,6 +55,17 @@ def run(report_path=None,screenshot=None):
                 for name in ('dashboard','trades','imports','dividends','instruments','settings'):
                     app.tabs.select(app.pages[name]);root.update_idletasks();root.update();check(app.pages[name].winfo_exists(),name)
                     report['pages'].append(name)
+                    if name=='imports':
+                        page=app.pages[name]
+                        for button in app.import_buttons.winfo_children():
+                            check(button.winfo_ismapped() and button.winfo_rooty()+button.winfo_height()<=page.winfo_rooty()+page.winfo_height(),'Import action clipped: '+str(button.cget('text')))
+                            check(button.winfo_rootx()+button.winfo_width()<=page.winfo_rootx()+page.winfo_width(),'Import action clipped horizontally')
+                    if name=='settings':
+                        page=app.pages[name]
+                        for index,button in enumerate(app.settings_buttons):
+                            app.connection_tabs.select(index);root.update_idletasks();root.update()
+                            check(button.winfo_ismapped() and button.winfo_rooty()+button.winfo_height()<=page.winfo_rooty()+page.winfo_height(),'Connection save action clipped')
+                        app.connection_tabs.select(0);root.update_idletasks();root.update()
                     if screenshot:
                         target=Path(screenshot);target=target.with_name(target.stem+'-'+name+'.png');target.parent.mkdir(parents=True,exist_ok=True)
                         grab=importlib.import_module('PIL.ImageGrab')
@@ -74,7 +85,7 @@ def run(report_path=None,screenshot=None):
                 check(app.store.load()==state,'UI changed stored journal')
                 check((Path(__file__).parent/'resources'/'windows_ocr.ps1').is_file(),'OCR script missing')
                 check(not errors,'\n'.join(errors))
-                report['assertions']=['currency_separation','fees_and_cost_basis','sold_out_history','net_dividends','unpriced_valuation','account_filters','blocked_import','stored_state_unchanged','ocr_resource_present']
+                report['assertions']=['currency_separation','fees_and_cost_basis','sold_out_history','net_dividends','unpriced_valuation','account_filters','blocked_import','stored_state_unchanged','ocr_resource_present','visible_import_actions','visible_connection_actions']
                 app.close();app=None;root=None;report['closed']=True
             finally:
                 if app:

@@ -26,7 +26,7 @@ def number(value):
 
 
 class Table(ttk.Frame):
-    def __init__(self, parent, columns, height=15):
+    def __init__(self, parent, columns, height=8):
         super().__init__(parent)
         self.tree = ttk.Treeview(self, columns=[c[0] for c in columns], show='headings', height=height, selectmode='browse')
         for key, label, width in columns:

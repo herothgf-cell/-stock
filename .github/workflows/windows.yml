@@ -85,9 +85,9 @@ jobs:
           RUN_NUMBER: ${{ github.run_number }}
         run: |
           Compress-Archive -Path smoke/* -DestinationPath release/StockJournal-verification.zip
-          $tag = 'v0.1.0'
+          $tag = 'v0.1.1'
           gh api "repos/$env:GH_REPO/git/ref/tags/$tag" 2>$null | Out-Null
-          if ($LASTEXITCODE -eq 0) { $tag = "v0.1.0-build.$env:RUN_NUMBER" }
+          if ($LASTEXITCODE -eq 0) { $tag = "v0.1.1-build.$env:RUN_NUMBER" }
           @'
           Windows 개인 주식 매매일지 초기 배포입니다.
           StockJournal-Windows.zip을 내려받아 압축을 풀고 StockJournal.exe를 실행하세요.

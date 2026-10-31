@@ -54,7 +54,9 @@ class JournalApp:
         self.secrets = SecretStore(self.directory / 'secrets.bin')
         self.smoke = smoke; self.busy = False; self.queue = queue.Queue(); self.preview = None; self.chosen = set(); self.history_filter = None
         self.last_quote = 0; self.pending_sync = None
-        root.title(f'주식 매매일지 · Stock Journal {__version__}'); root.geometry('1380x860'); root.minsize(1000, 700)
+        root.title(f'주식 매매일지 · Stock Journal {__version__}')
+        root.geometry(f"{min(1380,root.winfo_screenwidth()-24)}x{min(860,root.winfo_screenheight()-90)}")
+        root.minsize(1000, 660)
         style = ttk.Style(root); style.theme_use('clam')
         style.configure('.', font=('Malgun Gothic', 10)); style.configure('TFrame', background='#f4f7fa')
         style.configure('TLabel', background='#f4f7fa'); style.configure('Treeview', rowheight=30, background='white', fieldbackground='white')
@@ -72,8 +74,10 @@ class JournalApp:
             page = ttk.Frame(self.tabs, padding=14); self.pages[key] = page; self.tabs.add(page, text='  '+label+'  ')
         self.build_dashboard(); self.build_trades(); self.build_imports(); self.build_dividends(); self.build_instruments(); self.build_settings()
         self.status = tk.StringVar(value='이 PC에 저장합니다. 다른 PC에서 보려면 비공개 기록 저장소를 연결하세요.')
-        footer = ttk.Frame(root, padding=12); footer.pack(fill='x')
+        self.tabs.pack_forget()
+        footer = ttk.Frame(root, padding=12); footer.pack(side='bottom',fill='x')
         ttk.Label(footer, textvariable=self.status).pack(side='left'); self.progress = ttk.Progressbar(footer, mode='indeterminate', length=120); self.progress.pack(side='right')
+        self.tabs.pack(fill='both',expand=True,padx=18)
         root.protocol('WM_DELETE_WINDOW', self.close); self.refresh(); root.after(100, self.poll); root.after(15000, self.tick)
         if not smoke and self.settings.get('auto_sync'):
             root.after(1000, self.sync)
@@ -163,10 +167,10 @@ class JournalApp:
     def build_dividends(self):
         page = self.pages['dividends']
         self.actions(page,[('수령 추가',lambda:self.edit('dividends')),('수령 수정',lambda:self.edit_selected('dividends',self.receipts)),('수령 삭제',lambda:self.delete('dividends',self.receipts)),('ETFcheck 열기',lambda:webbrowser.open('https://www.etfcheck.co.kr/'))])
-        self.receipts=Table(page,[('date','수령일',130),('account','계좌',140),('name','종목',220),('gross','세전 금액',140),('tax','세금',110),('net','순수령액',140),('currency','통화',70)],height=7);self.receipts.pack(fill='both',expand=True)
+        self.receipts=Table(page,[('date','수령일',130),('account','계좌',140),('name','종목',220),('gross','세전 금액',140),('tax','세금',110),('net','순수령액',140),('currency','통화',70)],height=4);self.receipts.pack(fill='both',expand=True)
         ttk.Label(page,text='참고·공시 일정 · 선택 계좌의 보유 종목만 표시하며, 실제 받은 배당에 합산하지 않습니다.',font=('Malgun Gothic',11,'bold')).pack(anchor='w',pady=10)
         self.actions(page,[('일정 추가',lambda:self.edit('dividend_events')),('일정 수정',lambda:self.edit_selected('dividend_events',self.events)),('일정 삭제',lambda:self.delete('dividend_events',self.events))])
-        self.events=Table(page,[('name','종목',220),('record','기준일',120),('pay','지급 예정일',120),('amount','주당 금액',120),('currency','통화',70),('status','구분',90),('source','출처',250)],height=7);self.events.pack(fill='both',expand=True)
+        self.events=Table(page,[('name','종목',220),('record','기준일',120),('pay','지급 예정일',120),('amount','주당 금액',120),('currency','통화',70),('status','구분',90),('source','출처',250)],height=4);self.events.pack(fill='both',expand=True)
 
     def build_instruments(self):
         page=self.pages['instruments'];bar=self.actions(page,[('종목 추가',lambda:self.edit('instruments')),('수정',lambda:self.edit_selected('instruments',self.instruments)),('공식 종목 목록 받기',self.load_master),('가격 직접 입력',self.manual_quote)])
@@ -177,8 +181,8 @@ class JournalApp:
 
     def build_settings(self):
         page=self.pages['settings'];self.actions(page,[('계좌 추가',lambda:self.edit('accounts')),('계좌 수정',lambda:self.edit_selected('accounts',self.accounts)),('기록 백업 내보내기',self.export_backup),('백업 복원',self.restore_backup)])
-        self.accounts=Table(page,[('name','계좌 별칭',240),('broker','증권사',180),('kind','계좌 종류',130),('currency','기준 통화',100)],height=4);self.accounts.pack(fill='x',pady=(0,12))
-        panel=ttk.Notebook(page);panel.pack(fill='both',expand=True)
+        self.accounts=Table(page,[('name','계좌 별칭',240),('broker','증권사',180),('kind','계좌 종류',130),('currency','기준 통화',100)],height=2);self.accounts.pack(fill='x',pady=(0,12))
+        panel=ttk.Notebook(page);panel.pack(fill='both',expand=True);self.connection_tabs=panel;self.settings_buttons=[]
         nh=ttk.Frame(panel,padding=15);gh=ttk.Frame(panel,padding=15);panel.add(nh,text='NH 연결');panel.add(gh,text='다른 PC와 동기화')
         self.setting_vars={}
         fields=[(nh,'nh_app_key','NH 앱키',True),(nh,'nh_app_secret','NH 앱시크릿',True),(nh,'quote_interval','시세 갱신 간격(초)',False),(gh,'sync_repo','비공개 기록 저장소 (사용자/저장소)',False),(gh,'sync_branch','브랜치',False),(gh,'github_token','GitHub 토큰',True)]
@@ -194,7 +198,7 @@ class JournalApp:
         ttk.Checkbutton(gh,text='실행 시 및 기록 저장 후 자동 동기화',variable=self.auto_sync).grid(row=3,column=0,columnspan=2,sticky='w',pady=8)
         for parent,text in [(nh,'나무 PLUG 운영 키를 사용합니다. 30초 이상 간격의 현재가 조회입니다.\n해외 종목 가격은 직접 입력할 수 있습니다. 인증값은 이 PC에만 저장합니다.'),(gh,'별도 Private 저장소를 만들어 연결하세요. 공개 저장소에는 기록을 올리지 않습니다.\n토큰은 해당 저장소의 Contents 읽기/쓰기 권한이 필요합니다. 다른 PC에도 키를 각각 입력하세요.')]:
             ttk.Label(parent,text=text,wraplength=1000,foreground='#536471').grid(row=4,column=0,columnspan=2,sticky='w',pady=12)
-            ttk.Button(parent,text='설정 저장',command=lambda:self.safe(self.save_settings),style='Primary.TButton').grid(row=5,column=0,sticky='w')
+            button=ttk.Button(parent,text='설정 저장',command=lambda:self.safe(self.save_settings),style='Primary.TButton');button.grid(row=5,column=0,sticky='w');self.settings_buttons.append(button)
         ttk.Button(gh,text='지금 동기화',command=lambda:self.safe(self.sync)).grid(row=5,column=1,sticky='w')
         ttk.Label(page,text='기록 폴더: '+str(self.directory),foreground='#536471').pack(anchor='w',pady=10)
 
@@ -329,14 +333,14 @@ class JournalApp:
         self.import_account=tk.StringVar(value='원본 계좌 유지');self.import_account_box=ttk.Combobox(bar,textvariable=self.import_account,state='readonly',width=28);self.import_account_box.pack(side='right')
         ttk.Label(bar,text='저장할 계좌').pack(side='right',padx=8)
         source=ttk.LabelFrame(page,text='카톡·체결 텍스트',padding=8);source.pack(fill='x',pady=(0,10))
-        self.text_input=tk.Text(source,height=4,wrap='word',font=('Malgun Gothic',10));self.text_input.pack(side='left',fill='x',expand=True)
+        self.text_input=tk.Text(source,height=2,wrap='word',font=('Malgun Gothic',10));self.text_input.pack(side='left',fill='x',expand=True)
         side=ttk.Frame(source);side.pack(side='right',padx=10);self.default_date=tk.StringVar(value=today())
         ttk.Label(side,text='날짜 누락 시 적용').pack();ttk.Entry(side,textvariable=self.default_date,width=15).pack(pady=4);ttk.Button(side,text='텍스트 분석',command=lambda:self.safe(self.import_text)).pack()
         self.import_summary=tk.StringVar(value='가져온 기록은 검토 후 저장합니다.');ttk.Label(page,textvariable=self.import_summary,wraplength=1200).pack(anchor='w',pady=6)
-        self.import_table=Table(page,[('choose','저장',55),('type','유형',100),('date','날짜',130),('account','계좌',110),('name','종목',210),('quantity','수량 / 세전액',110),('price','단가 / 주당액',110),('notice','검토 사항',400)],height=10);self.import_table.pack(fill='both',expand=True)
+        self.import_table=Table(page,[('choose','저장',55),('type','유형',100),('date','날짜',130),('account','계좌',110),('name','종목',210),('quantity','수량 / 세전액',110),('price','단가 / 주당액',110),('notice','검토 사항',400)],height=4);self.import_table.pack(fill='both',expand=True)
         self.import_table.tree.bind('<Double-1>',lambda e:self.edit_import_row());self.import_table.tree.bind('<Button-1>',self.toggle_import)
-        self.import_issues=tk.Text(page,height=3,wrap='word',font=('Malgun Gothic',9));self.import_issues.pack(fill='x',pady=8)
-        self.actions(page,[('문제없는 거래 선택',self.select_valid),('거래 모두 해제',self.select_none),('선택 행 수정',self.edit_import_row),('선택 배당 제외',self.exclude_import_event),('검토한 기록 저장',self.commit_import)])
+        self.import_issues=tk.Text(page,height=2,wrap='word',font=('Malgun Gothic',9));self.import_issues.pack(fill='x',pady=8)
+        self.import_buttons=self.actions(page,[('문제없는 거래 선택',self.select_valid),('거래 모두 해제',self.select_none),('선택 행 수정',self.edit_import_row),('선택 배당 제외',self.exclude_import_event),('검토한 기록 저장',self.commit_import)])
         self.include_events=tk.BooleanVar(value=True);self.update_orders=tk.BooleanVar(value=False)
         ttk.Checkbutton(page,text='참고 배당 일정도 가져오기',variable=self.include_events).pack(side='left')
         ttk.Checkbutton(page,text='같은 외부 거래 갱신 허용 (NH 주문별 누적체결, 검토 후 선택)',variable=self.update_orders).pack(side='left',padx=15)
