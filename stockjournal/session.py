@@ -7,11 +7,12 @@ class InstanceLock:
     def __init__(self, path):
         path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)
         self.file = path.open('a+b')
-        self.file.seek(0)
-        if not self.file.read(1):
-            self.file.write(b'0'); self.file.flush()
-        self.file.seek(0)
         try:
+            # Windows byte-range locks forbid reads of the locked byte too.
+            # Query file metadata so a second instance reaches the lock attempt.
+            if os.fstat(self.file.fileno()).st_size == 0:
+                self.file.write(b'0'); self.file.flush()
+            self.file.seek(0)
             if os.name == 'nt':
                 import msvcrt
                 msvcrt.locking(self.file.fileno(), msvcrt.LK_NBLCK, 1)

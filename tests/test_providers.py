@@ -132,10 +132,13 @@ class NHProviderTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         self.cache_dir = Path(self.directory.name) / "cache"
+        self.case_counter = 0
 
-    def provider(self, http, key="fixture-key", secret="fixture-secret"):
+    def provider(self, http, key="fixture-key", secret="fixture-secret", *, reuse_cache=False):
+        self.case_counter += 1
+        cache_dir = self.cache_dir if reuse_cache else Path(self.directory.name) / f"case-{self.case_counter}"
         with patch.object(providers, "build_opener", return_value=http):
-            return NHProvider(key, secret, self.cache_dir)
+            return NHProvider(key, secret, cache_dir)
 
     def test_token_query_body_and_quote_headers_match_documented_contract(self):
         http = FixtureHTTP(token(), quote("70,000.25"))
@@ -223,17 +226,17 @@ class NHProviderTests(unittest.TestCase):
              patch("stockjournal.secrets._dpapi_encrypt", side_effect=encrypt), \
              patch("stockjournal.secrets._dpapi_decrypt", side_effect=encrypt):
             with patch.object(providers.time, "time", return_value=100000):
-                self.provider(FixtureHTTP(token("private-token", expires_in=999999), quote())).quotes([INSTRUMENT])
+                self.provider(FixtureHTTP(token("private-token", expires_in=999999), quote()), reuse_cache=True).quotes([INSTRUMENT])
             saved = next(self.cache_dir.iterdir()).read_bytes()
             self.assertNotIn(b"private-token", saved)
             self.assertNotIn(b"fixture-secret", saved)
             before = FixtureHTTP(quote())
             with patch.object(providers.time, "time", return_value=186300):
-                self.provider(before).quotes([INSTRUMENT])
+                self.provider(before, reuse_cache=True).quotes([INSTRUMENT])
             self.assertEqual(len(before.requests), 1)
             after = FixtureHTTP(token("refreshed"), quote())
             with patch.object(providers.time, "time", return_value=186401):
-                self.provider(after).quotes([INSTRUMENT])
+                self.provider(after, reuse_cache=True).quotes([INSTRUMENT])
             self.assertEqual(len(after.requests), 2)
 
     def test_daily_trade_request_and_numeric_order_sequence(self):
