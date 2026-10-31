@@ -79,6 +79,8 @@ def stage_import(current, preview, selected=None, account_override=None, include
         state['accounts'].setdefault(target, item); account_map[uid] = target
     for row in preview.instruments:
         item = record(**clean(row)); existing = state['instruments'].get(item['id'])
+        if existing and existing.get('deleted'):
+            raise ValueError('가져올 기록이 삭제된 종목을 참조합니다. 종목을 확인하세요.')
         if existing and existing['currency'] != item['currency']:
             raise ValueError(f"{item['id']}: 원본과 기존 종목의 통화가 다릅니다.")
         state['instruments'].setdefault(item['id'], item)
