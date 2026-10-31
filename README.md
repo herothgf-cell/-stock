@@ -44,7 +44,7 @@ cd stock-journal
 
 6. **200티큐** 탭에서 종가 자료와 분할 보정, 전략 예산·수익률·기존 사이클을 확인합니다. **자동 실행 · 주문 상태**에서 먼저 DRY_RUN 결과를 확인합니다.
 
-자세한 내용: [사용 가이드](docs/getting-started.md), [200티큐 규칙](docs/strategy-200tqqq.md), [자동 실행](docs/automation.md), [연결 범위와 제약](docs/limitations.md), [데이터 출처](docs/data-sources.md).
+자세한 내용: [사용 가이드](docs/getting-started.md), [실제 NH API 연결](docs/nh-api-connection.md), [200티큐 규칙](docs/strategy-200tqqq.md), [자동 실행](docs/automation.md), [연결 범위와 제약](docs/limitations.md), [데이터 출처](docs/data-sources.md).
 
 공개 저장소에는 개인 원본·초기 기록·계좌번호·인증키를 넣지 않습니다. 초기 기록은 별도로 앱에 입력해야 하며, clone만으로 개인 기록이 복제되지는 않습니다.
 
