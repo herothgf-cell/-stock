@@ -133,13 +133,18 @@ def _json_response(opener, request: Request) -> tuple[dict, dict[str, str]]:
 def _decimal(value: object, *, allow_zero: bool = False, allow_negative: bool = False) -> Decimal:
     if isinstance(value, bool) or not isinstance(value, (str, int, Decimal)):
         raise ProviderError("NH 응답의 수치가 올바르지 않습니다.")
-    text = str(value).strip()
-    if len(text) > 100 or not _NUMBER.fullmatch(text):
-        raise ProviderError("NH 응답의 수치가 올바르지 않습니다.")
-    try:
-        number = Decimal(text.replace(",", ""))
-    except InvalidOperation:
-        raise ProviderError("NH 응답의 수치가 올바르지 않습니다.") from None
+    if isinstance(value, Decimal):
+        number = value
+    elif isinstance(value, int):
+        number = Decimal(value)
+    else:
+        text = value.strip()
+        if len(text) > 100 or not _NUMBER.fullmatch(text):
+            raise ProviderError("NH 응답의 수치가 올바르지 않습니다.")
+        try:
+            number = Decimal(text.replace(",", ""))
+        except InvalidOperation:
+            raise ProviderError("NH 응답의 수치가 올바르지 않습니다.") from None
     if not number.is_finite() or (number < 0 and not allow_negative) or (number == 0 and not allow_zero):
         raise ProviderError("NH 응답에 유효한 양수 수치가 없습니다.")
     return number
@@ -415,8 +420,8 @@ class NHProvider:
             if output is not None:
                 if not isinstance(output, dict):
                     raise ProviderError("NH 잔고 요약의 형식이 올바르지 않습니다.")
-                summary = {key: _decimal_text(_decimal(value, allow_zero=True, allow_negative=True))
-                           for key, value in output.items() if key in summary_fields and value not in (None, "")}
+                summary = {key: parsed for key, value in output.items() if key in summary_fields
+                           for parsed in [_optional_decimal_value(value, signed=True)] if parsed is not None}
             else:
                 # Domestic totals are only authoritative after the final page.
                 summary = {}
@@ -582,11 +587,14 @@ def _output_rows(payload: dict, block: str, label: str, *, allow_summary: bool =
     return output
 
 
-def _optional_decimal(source: dict, field: str, *, signed: bool = False) -> str | None:
-    value = source.get(field)
-    if value in (None, ""):
+def _optional_decimal_value(value: object, *, signed: bool = False) -> str | None:
+    if value is None or (isinstance(value, str) and not value.strip()):
         return None
     return _decimal_text(_decimal(value, allow_zero=True, allow_negative=signed))
+
+
+def _optional_decimal(source: dict, field: str, *, signed: bool = False) -> str | None:
+    return _optional_decimal_value(source.get(field), signed=signed)
 
 
 def _text_value(value: object, *, default: str = "") -> str:
