@@ -273,6 +273,21 @@ class NHProviderTests(unittest.TestCase):
         self.assertEqual(snapshot["holdings"], [])
         self.assertEqual(snapshot["summary"], {"dca": "100"})
 
+    def test_balance_accepts_blank_optional_numbers_and_decimal_json_numbers(self):
+        row = {"iem_cd": "005930", "iem_nm": "삼성전자", "tp_cd_nm": "현금",
+               "itg_bnc_qty": Decimal("3.000000"), "phs_pr": "70000", "now_pr": "   ",
+               "eal_amt": "207000", "eal_pls_amt": "-3000", "lon_bnc_amt": "   "}
+        http = FixtureHTTP(token(), Response({"Output_0": {"dca": 0, "pft_rt": Decimal("0E-9"),
+                                                           "orr_pbl_amt2": "   "},
+                                               "Output_1": [row]}))
+        snapshot = self.provider(http).get_holdings("12345678901")
+        self.assertEqual(snapshot["summary"]["dca"], "0")
+        self.assertEqual(snapshot["summary"]["pft_rt"], "0")
+        self.assertNotIn("orr_pbl_amt2", snapshot["summary"])
+        self.assertEqual(snapshot["holdings"][0]["quantity"], "3")
+        self.assertIsNone(snapshot["holdings"][0]["current_price"])
+        self.assertIsNone(snapshot["holdings"][0]["loan_balance"])
+
     def test_overseas_cash_orders_map_to_existing_trade_schema(self):
         row = {"orr_no": 12, "org_orr_no": 0, "oss_sby_dit_cd": "2", "sby_dit_nm": "매수",
                "fc_sec_trd_nat_cd": "200", "iem_cd": "TQQQ", "iem_nm": "PROSHARES ULTRAPRO QQQ",
