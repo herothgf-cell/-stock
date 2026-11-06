@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
-  "version": "0.2.1",
-  "source_commit": "0c266a27035c3af1ba803cca150f1bcbb69d41c0",
-  "built_at_utc": "2026-10-31T15:04:19Z",
+  "version": "0.2.2",
+  "source_commit": "9e43195d1ef2f0338ee5d8c0f0a514a4d144e0ec",
+  "built_at_utc": "2026-11-06T18:56:10Z",
   "platform": "windows-x64",
   "filename": "StockJournal.exe",
-  "sha256": "6ff57b85d0cf357cabd420b1efecd7b49db290f0a8cdf56735bd9f546a332602",
-  "size_bytes": 14440187,
+  "sha256": "7af29efcaa2e8da8e5f17cd6c357f22d867dc74e364a6a8e978402650b3be743",
+  "size_bytes": 14440601,
   "verification": {
     "source_gui": true,
     "frozen_gui": true,
