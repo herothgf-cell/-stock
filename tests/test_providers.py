@@ -274,12 +274,13 @@ class NHProviderTests(unittest.TestCase):
         self.assertEqual(snapshot["summary"], {"dca": "100"})
 
     def test_balance_accepts_blank_optional_numbers_and_decimal_json_numbers(self):
-        row = {"iem_cd": "005930", "iem_nm": "삼성전자", "tp_cd_nm": "현금",
-               "itg_bnc_qty": Decimal("3.000000"), "phs_pr": "70000", "now_pr": "   ",
-               "eal_amt": "207000", "eal_pls_amt": "-3000", "lon_bnc_amt": "   "}
-        http = FixtureHTTP(token(), Response({"Output_0": {"dca": 0, "pft_rt": Decimal("0E-9"),
-                                                           "orr_pbl_amt2": "   "},
-                                               "Output_1": [row]}))
+        # Raw JSON preserves numeric tokens for the provider's Decimal decoder.
+        # json.dumps cannot serialize Decimal, and strings would miss this path.
+        body = '''{"Output_0": {"dca": 0, "pft_rt": 0E-9, "orr_pbl_amt2": "   "},
+                   "Output_1": [{"iem_cd": "005930", "iem_nm": "삼성전자", "tp_cd_nm": "현금",
+                                 "itg_bnc_qty": 3.000000, "phs_pr": "70000", "now_pr": "   ",
+                                 "eal_amt": "207000", "eal_pls_amt": "-3000", "lon_bnc_amt": "   "}]}'''
+        http = FixtureHTTP(token(), Response(body.encode("utf-8")))
         snapshot = self.provider(http).get_holdings("12345678901")
         self.assertEqual(snapshot["summary"]["dca"], "0")
         self.assertEqual(snapshot["summary"]["pft_rt"], "0")
@@ -531,3 +532,4 @@ class NHProviderTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
